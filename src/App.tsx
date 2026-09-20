@@ -83,8 +83,8 @@ function Shell() {
       <aside className={cn('bg-sidebar border-r border-sidebar-border flex flex-col shrink-0 sticky top-0 h-screen transition-all', collapsed ? 'w-[4.5rem]' : 'w-64')}>
         {/* Brand row — only real logos; GTC (fictional) gets plain text, no monogram */}
         <div className={cn('flex items-center gap-2.5 px-4 h-14 border-b border-sidebar-border', collapsed && 'justify-center px-0')}>
-          {persona === 'bank' && <img src="/logos/coop-pank.svg" alt="Coop Pank" className="h-5" />}
-          {persona === 'merchant' && <img src="/logos/bauhof.svg" alt="Bauhof" className="h-6" />}
+          {persona === 'bank' && <img src={`${import.meta.env.BASE_URL}logos/coop-pank.svg`} alt="Coop Pank" className="h-5" />}
+          {persona === 'merchant' && <img src={`${import.meta.env.BASE_URL}logos/bauhof.svg`} alt="Bauhof" className="h-6" />}
           {persona === 'buyer' && !collapsed && <span className="text-sm text-sidebar-foreground">GTC Constructions OÜ</span>}
           {persona === 'buyer' && collapsed && <HardHat className="h-4 w-4 text-muted-foreground" />}
           {!collapsed && <span className="text-xs text-muted-foreground">| {activePersona.role}</span>}

@@ -36,7 +36,7 @@ export function BuyerHome() {
     <div className="space-y-6 max-w-5xl">
       {/* Bauhofi kliendiportaal — inner branded header (real Bauhof logo, no invented marks) */}
       <div className="flex items-center gap-3 border rounded-xl bg-card px-5 py-4 shadow-sm">
-        <img src="/logos/bauhof.svg" alt="Bauhof" className="h-7" />
+        <img src={`${import.meta.env.BASE_URL}logos/bauhof.svg`} alt="Bauhof" className="h-7" />
         <div>
           <div className="font-semibold tracking-tight">Kliendiportaal</div>
           <div className="text-xs text-muted-foreground">Tere, GTC Constructions OÜ</div>
