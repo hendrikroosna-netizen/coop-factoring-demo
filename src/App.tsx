@@ -168,10 +168,10 @@ function Shell() {
           <button
             onClick={() => setCollapsed((c) => !c)}
             className="flex items-center justify-center gap-1.5 w-full rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-            aria-label={collapsed ? 'Laienda külgriba' : 'Ahenda külgriba'}
-            title={collapsed ? 'Laienda külgriba' : 'Ahenda külgriba'}
+            aria-label={collapsed ? 'Näita menüüd' : 'Peida menüü'}
+            title={collapsed ? 'Näita menüüd' : 'Peida menüü'}
           >
-            {collapsed ? <ChevronRight className="h-4 w-4" /> : <><ChevronLeft className="h-4 w-4" />Ahenda</>}
+            {collapsed ? <ChevronRight className="h-4 w-4" /> : <><ChevronLeft className="h-4 w-4" />Peida menüü</>}
           </button>
         </div>
       </aside>
