@@ -6,8 +6,9 @@ import { Badge } from '@/components/ui/badge';
 import { CheckCircle2, Info, Smartphone, KeyRound, User, Link2, CalendarClock } from 'lucide-react';
 import { StatusChip, EvidenceBadge } from '@/components/chrome';
 import { PAYMENT_TERMS } from '@/lib/data';
-import { eur, useStore } from '@/lib/store';
+import { eur, eur2, useStore } from '@/lib/store';
 import { cn } from '@/lib/utils';
+import { invoiceOutstanding, invoicePaidPrincipal } from '@/lib/finance';
 
 const TERMS = PAYMENT_TERMS;
 
@@ -69,7 +70,7 @@ export function BuyerHome() {
             <TableHeader>
               <TableRow>
                 <TableHead>Arve</TableHead>
-                <TableHead className="text-right">Summa</TableHead>
+                  <TableHead className="text-right">Tasumata jääk</TableHead>
                 <TableHead>Tähtaeg</TableHead>
                 <TableHead>Maksekonto (vIBAN)</TableHead>
                 <TableHead>Viitenumber</TableHead>
@@ -83,8 +84,10 @@ export function BuyerHome() {
                 <TableRow key={i.id}>
                   <TableCell className="font-medium tabular-nums">{i.nr}</TableCell>
                   <TableCell className="text-right tabular-nums whitespace-nowrap">
-                    {eur(i.amount + (i.extensionFee ?? 0))}
-                    {i.extensionFee ? <div className="text-[11px] text-muted-foreground">sh lisatasu {eur(i.extensionFee)} (pikendatud tähtaeg)</div> : null}
+                    {eur2(invoiceOutstanding(i))}
+                    <div className="text-[11px] text-muted-foreground">Algne arve {eur2(i.amount + (i.extensionFee ?? 0))}</div>
+                    {invoicePaidPrincipal(i) > 0 && i.status !== 'paid' && <div className="text-[11px] text-warning">Osaliselt tasutud</div>}
+                    {i.extensionFee ? <div className="text-[11px] text-muted-foreground">Pikendustasu {eur2(i.extensionFee)}</div> : null}
                   </TableCell>
                   <TableCell className="whitespace-nowrap tabular-nums">{i.due}</TableCell>
                   <TableCell className="font-mono text-xs">{i.viban}</TableCell>
@@ -93,7 +96,7 @@ export function BuyerHome() {
                   <TableCell><BuyerPayChip status={i.status} /></TableCell>
                   <TableCell>
                     {i.status !== 'paid' && (
-                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => payInvoice(i.id)}>Maksa {i.extensionFee ? eur(i.amount + i.extensionFee) : ''}</Button>
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => payInvoice(i.id)}>Maksa {eur2(invoiceOutstanding(i))}</Button>
                     )}
                     {i.status === 'paid' && <Badge variant="outline" className="border-success/30 bg-success/10 text-success rounded-md px-2 py-0.5 text-xs font-medium hover:bg-transparent"><CheckCircle2 className="h-3 w-3 mr-1" />Makse kinnitatud</Badge>}
                   </TableCell>
@@ -137,8 +140,8 @@ export function BuyerHome() {
                       <StatusChip status={o.status} />
                     </div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      Pakkumine: maksetähtaeg 30 → {o.days} päeva · lisatasu {o.feePct.toLocaleString('et-EE')}% = <span className="font-medium text-foreground tabular-nums">{eur(o.fee)}</span> · pakkus {o.createdBy}
-                      {o.status === 'offered' && <div className="mt-0.5">Aktsepteerimisel on tasumisele kuuluv kogusumma <span className="font-medium text-foreground tabular-nums">{eur(inv.amount + o.fee)}</span> (arve {eur(inv.amount)} + lisatasu {eur(o.fee)}).</div>}
+                      Pakkumine: maksetähtaeg 30 → {o.days} päeva · lisatasu {o.feePct.toLocaleString('et-EE')}% = <span className="font-medium text-foreground tabular-nums">{eur2(o.fee)}</span> · pakkus {o.createdBy}
+                      {o.status === 'offered' && <div className="mt-0.5">Aktsepteerimisel on tasumisele kuuluv kogusumma <span className="font-medium text-foreground tabular-nums">{eur2(inv.amount + o.fee)}</span> (arve {eur2(inv.amount)} + lisatasu {eur2(o.fee)}).</div>}
                     </div>
                   </div>
                   {o.status === 'offered' && (
@@ -147,7 +150,7 @@ export function BuyerHome() {
                       <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => respondOffer(o.id, false)}>Keeldu</Button>
                     </div>
                   )}
-                  {o.status === 'accepted' && <span className="text-xs text-success shrink-0 pt-1">Uus tähtaeg kantud arvele — tasumisele kokku {eur(inv.amount + o.fee)}</span>}
+                  {o.status === 'accepted' && <span className="text-xs text-success shrink-0 pt-1">Uus tähtaeg kantud arvele · tasumata jääk {eur2(invoiceOutstanding(inv))}</span>}
                   {o.status === 'void' && <span className="text-xs text-destructive shrink-0 pt-1">Pakkumine kehtetu</span>}
                 </div>
               );

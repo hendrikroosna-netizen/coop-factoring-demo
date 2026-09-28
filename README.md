@@ -1,73 +1,38 @@
-# React + TypeScript + Vite
+# Coop faktooringu demo
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Eestikeelne faktooringu prototüüp panga, kaupmehe ja ostja vaatega.
 
-Currently, two official plugins are available:
+[Ava avalik demo](https://hendrikroosna-netizen.github.io/coop-factoring-demo/)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Tehingud, saldod, riskihinnangud ja AI väljundid on sünteetilised näited. AI abifunktsioonid on märgitud „Simuleeritud AI”; päris AI-mudelit, panga API-t ega muid taustateenuseid ei kutsuta. Näidisdokumente ei laadita üles ja päringumustandeid ei saadeta välja. Ettevõtete nimed ja logod annavad esitlusel konteksti.
 
-## React Compiler
+## Kohalik käivitamine
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Vajalik on **Node.js 24** ja npm. Rakendus kasutab Reacti, TypeScripti ja Vite'i.
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+npm ci
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Arendusserver avaneb aadressil `http://localhost:3000`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+npm run build
+npm test
 ```
+
+`build` kontrollib TypeScripti ja loob staatilise saidi kausta `dist/`. `test` kontrollib finantsarvestust ja AI töövoogude olekureegleid. Valmis paketti saab kohapeal vaadata käsuga `npm run preview`.
+
+## Neli AI näidisvoogu
+
+1. **Otsustusabi:** Coop Pank → Portfell → ava GTC Constructions. Vaata AI soovitust ja selle aluseid, koosta muudetav otsuse mustand ning salvesta või esita inimese ülevaatusele. Viru Raudteede toimik näitab puuduliku info juhtumit: riskihinnangu asemel pakutakse lisainfo päringut. Mustand ei muuda kehtivat limiiti ega piiranguid.
+2. **Arve ettevalmistus:** Bauhof Group → Arved → ARV-2026-04490. Lisa näidisdokument ja saada tõend kontrolli. Seejärel Coop Pank → Nõuded ja laekumised → Kaupmehe esitatud tarnetõendid: märgi kontroll tehtuks, vali kinnitaja ja kinnita E2 tase. Dokumendi lisamine ega kinnitamine ei käivita finantseerimist.
+3. **Laekumise jaotus:** Coop Pank → Nõuded ja laekumised → AI laekumiste jaotus. Vaata GTC 10 000 € näidislaekumise ettepanekut, muuda vajadusel jaotust, kontrolli mõju saldodele ning vali kinnitaja. Alles „Kinnita jaotus” uuendab arvejääke, limiidikasutust ja auditi jälge; osaline makse jätab jäägi avatuks.
+4. **Kasvuvõimalus:** Bauhof Group → Ärikliendihaldur → Minu kliendid või Maksa hiljem. Ava AI soovitatud pakkumise mustand, vali olemasolevas vormis 45 või 60 päeva ja kontrolli tasu. „Paku” loob pakkumise, mida saab GTC Constructions → Kliendiportaal vaates aktsepteerida. Soovitus kasutab praegust vaba limiiti ja viivitust; see ei suurenda limiiti ega väida kontrollimata makseajalugu.
+
+## Salvestamine ja uus esitlus
+
+Arved, salvestatud AI memod, tõendite olekud, pakkumised, maksete jaotused ning audit säilivad selle brauseri `localStorage`-is. Lehe värskendamine neid ei lähtesta. Rollivalikud salvestatakse eraldi; salvestamata tekstiväljad ja ajutised vormivalikud ei pruugi säilida.
+
+Puhta näidisvoo alustamiseks vali **Coop Pank → Auditi jälg → Uus sessioon — lähtesta demoseis**. See taastab tehingute algseisu ja lisab lähtestamise auditi kirje; rollivalikud säilivad. Laekumise jaotus võib muuta kasvusoovitusi, seega lähtesta demo, kui soovid vooge üksteisest sõltumatult esitleda. Avalikul saidil ja kohalikul serveril on eraldi brauseriseis; teiste kasutajate tegevus sinu näidet ei muuda.

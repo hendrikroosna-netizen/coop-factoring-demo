@@ -10,6 +10,10 @@ import { EVENT_RULES, EPOD_LEVELS, FACILITY_RULES, GRADE_CRITERIA, INTEREST_RULE
 import { eur, useStore } from '@/lib/store';
 import type { BankRole, Buyer, EventType } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { AiDecisionAssistant } from '@/components/ai-decision-assistant';
+import { AiPaymentAssistant } from '@/components/ai-payment-assistant';
+import { EvidenceReviewQueue } from '@/components/evidence-review-queue';
+import { invoicePrincipalOutstanding, invoiceFinancedOutstanding, invoiceOutstanding } from '@/lib/finance';
 
 function EventFeed() {
   const { events, buyers } = useStore();
@@ -138,7 +142,7 @@ function BuyerDetail({ buyer, onClose, onShowClaims }: { buyer: Buyer; onClose: 
   };
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="w-[calc(100vw-2rem)] max-w-[1200px] sm:max-w-[1200px] max-h-[90vh] overflow-y-auto">
         <div className="text-xs text-muted-foreground flex items-center gap-1">
           Portfell <ChevronRight className="h-3 w-3" /> <span className="font-medium text-foreground">{buyer.name}</span>
         </div>
@@ -154,6 +158,8 @@ function BuyerDetail({ buyer, onClose, onShowClaims }: { buyer: Buyer; onClose: 
           {buyer.pep && <Badge className="bg-orange-100 text-orange-800 hover:bg-orange-100">PEP — tugevdatud kliendi tundmaõppimine (EDD)</Badge>}
         </div>
 
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-5 items-start">
+        <div className="space-y-4 min-w-0 order-2 lg:order-1">
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold">Otsus reeglite järgi vs kinnitatud otsus</CardTitle></CardHeader>
           <CardContent>
@@ -196,7 +202,7 @@ function BuyerDetail({ buyer, onClose, onShowClaims }: { buyer: Buyer; onClose: 
                 </TableRow>
                 <TableRow>
                   <TableCell className="text-[13px]">Tulemus</TableCell>
-                  <TableCell className="text-[13px]">{buyer.override ? buyer.override.rulesResult : buyer.status === 'rejected' ? 'REJECTED' : aml ? 'REFER (PEP → EDD)' : 'ACCEPTED'}</TableCell>
+                  <TableCell className="text-[13px]">{buyer.override ? buyer.override.rulesResult : buyer.status === 'rejected' ? 'REJECTED' : aml ? 'REFER (PEP → EDD)' : buyer.status === 'review' ? 'REFER (sündmus vajab läbivaatust)' : 'ACCEPTED'}</TableCell>
                   <TableCell className="text-[13px]">
                     {buyer.status === 'rejected'
                       ? 'REJECTED'
@@ -208,7 +214,7 @@ function BuyerDetail({ buyer, onClose, onShowClaims }: { buyer: Buyer; onClose: 
                             : aml?.state === 'four-eyes'
                               ? 'OOTAB NELJA SILMA KINNITUST'
                               : 'TAOTLUS OOTEL — otsust pole'
-                          : 'ACCEPTED'}
+                          : buyer.status === 'review' ? 'LÄBIVAATUSEL' : 'ACCEPTED'}
                   </TableCell>
                 </TableRow>
                 {buyer.override && (
@@ -357,6 +363,9 @@ function BuyerDetail({ buyer, onClose, onShowClaims }: { buyer: Buyer; onClose: 
             {confirmError && <div className="text-xs text-red-700 font-medium">{confirmError}</div>}
           </div>
         )}
+        </div>
+        <aside className="min-w-0 order-1 lg:order-2 lg:sticky lg:top-0" aria-label="Ostja AI otsustusabi"><AiDecisionAssistant key={buyer.id} buyerId={buyer.id} /></aside>
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -412,7 +421,7 @@ function AnalystDashboard() {
 }
 
 function CfoDashboard() {
-  const { base, buyers } = useStore();
+  const { base, buyers, demoPayments } = useStore();
   // R19: RK-01 intressipaus kajastub tuluprognoosis — brutoprognoos, peatamise mõju ja neto eraldi
   const interestMonthGross = (base.fundsEmployed * EFFECTIVE_RATE) / 12;
   const frozenInterestMonth = (base.frozenFinanced * EFFECTIVE_RATE) / 12;
@@ -491,13 +500,16 @@ function CfoDashboard() {
       </div>
 
       <Card>
-        <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold">Laekumiste kokkuvõte — sobitused (LEDGER)</CardTitle></CardHeader>
+        <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold">Ajalooliste näidislaekumiste kokkuvõte</CardTitle></CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-[13px]">
             <div><div className="text-xs text-muted-foreground">Sobituse määr (automaatne)</div><div className="font-semibold tabular-nums text-lg">{pct(autoMatched / LEDGER.length, 0)}</div><div className="text-[11px] text-muted-foreground">{autoMatched}/{LEDGER.length} laekumist — vIBAN määrab ostja, RF-viide nõude</div></div>
             <div><div className="text-xs text-muted-foreground">Keskmine sobitusaeg</div><div className="font-semibold text-lg">reaalajas</div><div className="text-[11px] text-muted-foreground">camt.054 → sobitus sekunditega; erandid ootavad raamatupidajat</div></div>
             <div><div className="text-xs text-muted-foreground">Erandite summa</div><div className="font-semibold tabular-nums text-lg text-warning">{eur(exceptionSum)}</div><div className="text-[11px] text-muted-foreground">osalised 9 500 € + 7 740 € + erand 1 250 €</div></div>
             <div><div className="text-xs text-muted-foreground">Detailid</div><div className="text-[13px]">Vaade «Nõuded ja laekumised» → laekumiste register</div></div>
+          </div>
+          <div className="border-t mt-4 pt-3 text-[13px]">
+            {demoPayments.map(payment => <div key={payment.id} className="flex gap-3 justify-between flex-wrap"><span>Interaktiivne AI näidislaekumine · {eur(payment.amount)}</span><span className={payment.status === 'allocated' ? 'text-success' : 'text-warning'}>{payment.status === 'allocated' ? `Jaotus kinnitatud · ${payment.confirmedBy}` : 'Ootab inimese kinnitatud jaotust'}</span></div>)}
           </div>
         </CardContent>
       </Card>
@@ -550,7 +562,7 @@ function CroDashboard() {
       if (bucket.id === '61-90') return dpd >= 61 && dpd <= 90;
       return dpd > 90;
     });
-    return { ...bucket, count: list.length, sum: list.reduce((s, i) => s + i.amount, 0) };
+    return { ...bucket, count: list.length, sum: list.reduce((s, i) => s + invoicePrincipalOutstanding(i), 0) };
   });
   const overrides = buyers.filter((b) => b.override);
   const overrideShare = overrides.length / buyers.length;
@@ -832,7 +844,7 @@ function Portfolio({ onShowClaims }: { onShowClaims: () => void }) {
   const sorted = [...buyers].sort((a, b) => b.limit - a.limit);
   // Peatatud ostja juba finantseeritud osa (intress peatatud, RK-01)
   const frozenFinancedOf = (buyerId: string) =>
-    invoices.filter((i) => i.buyerId === buyerId && i.status === 'financed').reduce((s, i) => s + (i.amount - i.retention), 0);
+    invoices.filter((i) => i.buyerId === buyerId).reduce((s, i) => s + invoiceFinancedOutstanding(i), 0);
   return (
     <div className="space-y-4">
       <Card>
@@ -1320,8 +1332,12 @@ const LEDGER: LedgerRow[] = [
 ];
 
 function ClaimsPage() {
+  const { invoices } = useStore();
+  const timelineInvoice = invoices.find(i => i.id === 'inv1');
   return (
     <div className="space-y-6">
+      <AiPaymentAssistant />
+      <EvidenceReviewQueue />
       {/* A — nõude elutsükkel */}
       <Card>
         <CardHeader className="pb-2">
@@ -1350,7 +1366,7 @@ function ClaimsPage() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-semibold">Näidisnõue ajajoon — ARV-2026-04412</CardTitle>
-          <div className="text-xs text-muted-foreground">Demo arvestuskuupäev {DEMO_AS_OF}: arve on avatud ja ootab laekumist (ostja portaalis «maksmata»). Tähtaja-järgsed sammud on märgitud näidisstsenaariumina.</div>
+          <div className="text-xs text-muted-foreground">Demo arvestuskuupäev {DEMO_AS_OF}. Praegune tasumata jääk: {timelineInvoice ? eur(invoiceOutstanding(timelineInvoice)) : '—'}. Allpool on algne elutsükli näide, tähtaja-järgsed sammud on näidisstsenaariumid.</div>
         </CardHeader>
         <CardContent>
           <div className="relative pl-7 space-y-5 before:content-[''] before:absolute before:left-[7px] before:top-1.5 before:bottom-1.5 before:w-px before:bg-border">
@@ -1372,7 +1388,8 @@ function ClaimsPage() {
       {/* C — laekumiste register */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-semibold">Laekumiste register — camt.054 sobitused</CardTitle>
+          <CardTitle className="text-sm font-semibold">Ajalooline laekumiste register — camt.054 näited</CardTitle>
+          <p className="text-xs text-muted-foreground">Varasemad näidislaekumised. Käesoleva demo AI jaotus ja saldode muudatused on ülal ning auditi jäljes.</p>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">

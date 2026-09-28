@@ -1,6 +1,7 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from 'react';
 import { BASE, BUYERS, INVOICES, PAYMENT_TERMS } from './data';
-import type { AuditLine, BankRole, Buyer, EventAction, EventType, Invoice, MerchantRole, Persona, PlatformEvent, SanctionCase, TermOffer } from './types';
+import { applyInvoicePayment, applyPaymentAllocation, canOfferInvoice, canSubmitCreditDraft, cents, decisionContextFingerprint, euros, invoiceFinancedOutstanding, invoiceOutstanding, invoicePaidPrincipal, migrateInvoice, seedDemoPayments } from './finance';
+import type { AiDraft, DemoPayment, EvidenceReview, PaymentAllocation, AuditLine, BankRole, Buyer, EventAction, EventType, Invoice, MerchantRole, Persona, PlatformEvent, SanctionCase, TermOffer } from './types';
 
 interface Store {
   persona: Persona;
@@ -31,6 +32,14 @@ interface Store {
   /** R08: AML-otsuse nelja silma kinnitus (2. kinnitaja ≠ taotleja) */
   confirmAmlDecision: (buyerId: string, approver: string) => boolean;
   payInvoice: (invoiceId: string) => void;
+  aiDrafts: Record<string, AiDraft>;
+  saveAiDraft: (buyerId: string, text: string, kind: AiDraft['kind'], submit: boolean, reviewedContext?: string) => string | null;
+  evidenceReviews: Record<string, EvidenceReview>;
+  attachDemoEvidence: (invoiceId: string) => string | null;
+  submitEvidenceReview: (invoiceId: string) => string | null;
+  confirmEvidenceReview: (invoiceId: string, reviewer: string) => string | null;
+  demoPayments: DemoPayment[];
+  confirmPaymentAllocation: (paymentId: string, allocations: PaymentAllocation[], reviewer: string) => string | null;
   /** R13: kogu demoseis (koos auditiga) lähtestatakse ja märgitakse uus sessioon */
   resetDemo: () => void;
   base: {
@@ -58,8 +67,9 @@ const uid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.r
 // Päris kellaaeg sündmuse toimumise hetkel (HH:MM)
 const nowTime = () => new Date().toLocaleTimeString('et-EE', { hour: '2-digit', minute: '2-digit' });
 
-const STATE_KEY = 'coop-factoring-demo-state-v2';
-const STATE_VERSION = 2;
+const STATE_KEY = 'coop-factoring-demo-state-v3';
+const LEGACY_STATE_KEY = 'coop-factoring-demo-state-v2';
+const STATE_VERSION = 3;
 
 // Seemne-kirjed säilitavad oma usutavad fikseeritud ajad.
 // R13: Pärnu Torutööd erandotsus (KÄSITSI-01) on auditis aja, otsustaja, kinnitaja ja alusega.
@@ -87,18 +97,24 @@ interface DemoState {
   audit: AuditLine[];
   sanctionCases: Record<string, SanctionCase>;
   unfreezeRequests: Record<string, string>;
+  aiDrafts: Record<string, AiDraft>;
+  evidenceReviews: Record<string, EvidenceReview>;
+  demoPayments: DemoPayment[];
 }
 
 function seedState(): DemoState {
   return {
     version: STATE_VERSION,
     buyers: BUYERS.map((b) => ({ ...b })),
-    invoices: INVOICES.map((i) => ({ ...i })),
+    invoices: INVOICES.map(migrateInvoice),
     events: [...SEED_EVENTS],
     offers: [],
     audit: [...SEED_AUDIT],
     sanctionCases: {},
     unfreezeRequests: {},
+    aiDrafts: {},
+    evidenceReviews: {},
+    demoPayments: seedDemoPayments(),
   };
 }
 
@@ -106,12 +122,17 @@ function seedState(): DemoState {
 // ostjate staatused, saldod ja auditi kooskõlalisena (või lähtestatakse kõik koos).
 function loadState(): DemoState {
   try {
-    const raw = localStorage.getItem(STATE_KEY);
+    const raw = localStorage.getItem(STATE_KEY) ?? localStorage.getItem(LEGACY_STATE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as DemoState;
-      if (parsed && parsed.version === STATE_VERSION && Array.isArray(parsed.buyers) && Array.isArray(parsed.invoices) && Array.isArray(parsed.audit)) {
+      if (parsed && (parsed.version === STATE_VERSION || parsed.version === 2) && Array.isArray(parsed.buyers) && Array.isArray(parsed.invoices) && Array.isArray(parsed.audit)) {
         return {
           ...parsed,
+          version: STATE_VERSION,
+          invoices: parsed.invoices.map(migrateInvoice),
+          aiDrafts: parsed.aiDrafts ?? {},
+          evidenceReviews: parsed.evidenceReviews ?? {},
+          demoPayments: Array.isArray(parsed.demoPayments) ? parsed.demoPayments : seedDemoPayments(),
           offers: Array.isArray(parsed.offers) ? parsed.offers : [],
           events: Array.isArray(parsed.events) ? parsed.events : [],
           sanctionCases: parsed.sanctionCases ?? {},
@@ -162,8 +183,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [merchantRole]);
 
-  const [state, setState] = useState<DemoState>(loadState);
-  const { buyers, invoices, events, offers, audit, sanctionCases, unfreezeRequests } = state;
+  const [state, setReactState] = useState<DemoState>(loadState);
+  const stateRef = useRef(state);
+  // Synchronous transaction reference lets consecutive clicks validate the newest
+  // state before React renders, including idempotent receipt confirmation.
+  const setState = (action: SetStateAction<DemoState>) => {
+    const next = typeof action === 'function' ? action(stateRef.current) : action;
+    stateRef.current = next;
+    setReactState(next);
+  };
+  const { buyers, invoices, events, offers, audit, sanctionCases, unfreezeRequests, aiDrafts, evidenceReviews, demoPayments } = state;
 
   // Demo: kogu seis säilitatakse brauseri localStorage'is — värskendus taastab järjepideva seisu
   useEffect(() => {
@@ -264,12 +293,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const confirmUnfreeze = (buyerId: string, approver: string): boolean => {
-    const b = state.buyers.find((x) => x.id === buyerId);
-    if (!b) return false;
+    const current = stateRef.current;
+    const b = current.buyers.find((x) => x.id === buyerId);
+    if (!b || b.status !== 'frozen') return false;
     // R01: sanktsioonivaste lahendamise otsus + tõend peab olemas olema enne taastamist
-    if (state.sanctionCases[buyerId]?.state === 'open') return false;
-    const requester = state.unfreezeRequests[buyerId] ?? 'Kadri Rehe';
-    if (!approver || approver === requester) return false;
+    if (current.sanctionCases[buyerId]?.state === 'open') return false;
+    const requester = current.unfreezeRequests[buyerId];
+    if (!requester || !approver.trim() || approver.trim() === requester.trim()) return false;
     setState((s) => ({
       ...s,
       buyers: s.buyers.map((x) => (x.id === buyerId ? { ...x, status: 'active' } : x)),
@@ -313,8 +343,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const proposeAmlDecision: Store['proposeAmlDecision'] = (buyerId) => {
-    const b = state.buyers.find((x) => x.id === buyerId);
-    if (!b || b.amlDecision?.state !== 'proposal') return;
+    const current = stateRef.current;
+    const b = current.buyers.find((x) => x.id === buyerId);
+    if (!b || b.status !== 'pending' || b.amlDecision?.state !== 'proposal' || current.sanctionCases[buyerId]?.state === 'open') return;
     setState((s) => ({
       ...s,
       buyers: s.buyers.map((x) =>
@@ -325,10 +356,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const confirmAmlDecision: Store['confirmAmlDecision'] = (buyerId, approver) => {
-    const b = state.buyers.find((x) => x.id === buyerId);
-    if (!b || b.amlDecision?.state !== 'four-eyes') return false;
+    const current = stateRef.current;
+    const b = current.buyers.find((x) => x.id === buyerId);
+    if (!b || b.status !== 'pending' || b.relationFlag || b.amlDecision?.state !== 'four-eyes' || current.sanctionCases[buyerId]?.state === 'open') return false;
     const requester = b.amlDecision.requester ?? 'Kadri Rehe';
-    if (!approver || approver === requester) return false;
+    if (!approver.trim() || approver.trim() === requester.trim()) return false;
     setState((s) => ({
       ...s,
       buyers: s.buyers.map((x) =>
@@ -341,35 +373,91 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return true;
   };
 
-  // R02/R05: laekumine muudab nõude jääki, tegelikku finantseeritud põhiosa, ostja kasutust
-  // ja müüjale makstavat jääki — kõik ühest arvutusest. Aktsepteeritud lisatasu kuulub
-  // tasumisele koos põhisummaga; tasu saaja on müüja (nõude osa), pank võtab intressi
-  // pikendatud perioodilt. Finantseerimata (E1) arve ei vabasta finantseeringut.
+  const appendAudit = (s: DemoState, actor: string, text: string): DemoState => ({
+    ...s, audit: [{ id: uid(), time: nowTime(), actor, text }, ...s.audit].slice(0, 60),
+  });
+
+  const saveAiDraft: Store['saveAiDraft'] = (buyerId, text, kind, submit, reviewedContext) => {
+    const current = stateRef.current;
+    if (persona !== 'bank') return 'Otsustusabi märkmeid saab salvestada panga vaates.';
+    const buyer = current.buyers.find((b) => b.id === buyerId);
+    if (!buyer) return 'Ostjat ei leitud.';
+    if (!text.trim()) return 'Lisage memo tekst.';
+    const contextFingerprint = decisionContextFingerprint(buyer, current.sanctionCases[buyerId], current.events);
+    if (reviewedContext !== undefined && reviewedContext !== contextFingerprint) return 'Ostja andmed on muutunud. Koosta värske mustand ja vaata see enne salvestamist või esitamist üle.';
+    if (submit && kind === 'credit' && !canSubmitCreditDraft(current.buyers.find((b) => b.id === buyerId), current.sanctionCases[buyerId], current.events)) return 'Ostjal on pooleliolev riskikontroll. Salvestage mustand või esitage lisainfo päring; krediidimemo esitamine ootab piirangute lahendamist.';
+    const draft: AiDraft = { text: text.trim(), kind, status: submit ? 'submitted' : 'draft', updatedAt: new Date().toISOString(), contextFingerprint };
+    setState(appendAudit({ ...current, aiDrafts: { ...current.aiDrafts, [buyerId]: draft } }, 'Kadri Rehe (analüütik)', `AI näidismemo ${submit ? 'esitatud läbivaatuseks' : 'salvestatud mustandina'}: ${current.buyers.find((b) => b.id === buyerId)!.name}. Liik: ${kind === 'credit' ? 'krediidimemo' : 'lisainfo päring'}. Krediidiotsust, limiiti ega piiranguid ei muudetud.`));
+    return null;
+  };
+
+  const attachDemoEvidence: Store['attachDemoEvidence'] = (invoiceId) => {
+    const current = stateRef.current;
+    const invoice = current.invoices.find((i) => i.id === invoiceId);
+    if (persona !== 'merchant') return 'Tarnekinnituse saab lisada müüja vaates.';
+    if (!invoice || invoice.status === 'paid' || invoice.evidence !== 'E1') return 'Näidistõendi saab lisada ainult tasumata E1 arvele.';
+    if (current.evidenceReviews[invoiceId]) return null;
+    const review: EvidenceReview = { state: 'attached', documentName: `Saateleht-${invoice.nr}-DEMO.pdf` };
+    setState(appendAudit({ ...current, evidenceReviews: { ...current.evidenceReviews, [invoiceId]: review } }, 'Müüja raamatupidaja', `${invoice.nr}: lisatud sünteetiline demo-saateleht kontrollimiseks. E1 tase ja finantseerimise seis ei muutunud.`));
+    return null;
+  };
+
+  const submitEvidenceReview: Store['submitEvidenceReview'] = (invoiceId) => {
+    const current = stateRef.current;
+    const invoice = current.invoices.find((i) => i.id === invoiceId);
+    const review = current.evidenceReviews[invoiceId];
+    if (persona !== 'merchant') return 'Tõendi saab kontrolli esitada müüja vaates.';
+    if (!invoice || invoice.status === 'paid' || invoice.evidence !== 'E1') return 'Arve seis muutus; tõendit ei saa enam kontrolli esitada.';
+    if (!review) return 'Lisage esmalt näidistõend.';
+    if (review.state !== 'attached') return null;
+    setState(appendAudit({ ...current, evidenceReviews: { ...current.evidenceReviews, [invoiceId]: { ...review, state: 'submitted' } } }, 'Müüja raamatupidaja', `${invoice.nr}: näidistõend esitatud panga kontrolli. AI võrdlus on soovitus; E1 muutub E2-ks alles inimese kinnitusega.`));
+    return null;
+  };
+
+  const confirmEvidenceReview: Store['confirmEvidenceReview'] = (invoiceId, reviewer) => {
+    const current = stateRef.current;
+    const invoice = current.invoices.find((i) => i.id === invoiceId);
+    const review = current.evidenceReviews[invoiceId];
+    if (persona !== 'bank') return 'Tarnekinnituse kinnitab panga töötaja.';
+    if (!reviewer.trim()) return 'Lisage kontrollija nimi.';
+    if (review?.state === 'confirmed') return null;
+    if (!invoice || invoice.status === 'paid' || invoice.evidence !== 'E1' || review?.state !== 'submitted') return 'Arve või tõendi seis muutus; kontrolli ei saa kinnitada.';
+    const buyer = current.buyers.find((b) => b.id === invoice.buyerId);
+    if (!buyer || buyer.status !== 'active' || buyer.relationFlag || current.sanctionCases[buyer.id]?.state === 'open') return 'Ostjal on piirang või pooleliolev riskikontroll. Tõend jääb kontrolli ootele.';
+    setState(appendAudit({ ...current,
+      invoices: current.invoices.map((i) => i.id === invoiceId ? { ...i, evidence: 'E2' } : i),
+      evidenceReviews: { ...current.evidenceReviews, [invoiceId]: { ...review, state: 'confirmed', reviewer: reviewer.trim() } },
+    }, reviewer.trim(), `${invoice.nr}: demo-saatelehe arvenumber, summa ja tarne kinnitatud; tõend E1 → E2. Arve jääb avatuks; väljamakset ega limiidimuudatust ei tehtud.`));
+    return null;
+  };
+
+  const confirmPaymentAllocation: Store['confirmPaymentAllocation'] = (paymentId, allocations, reviewer) => {
+    if (persona !== 'bank') return 'Laekumise jaotuse kinnitab panga raamatupidaja.';
+    const applied = applyPaymentAllocation(stateRef.current, paymentId, allocations, reviewer);
+    if (applied.error || applied.alreadyApplied) return applied.error;
+    const detail = allocations.map((a) => `${applied.state.invoices.find((i) => i.id === a.invoiceId)!.nr}: ${fmt2(a.amount)}`).join('; ');
+    setState(appendAudit(applied.state, reviewer.trim(), `AI näidislaekumise ${paymentId} jaotus kinnitatud inimese poolt: ${detail}. Nõuete põhiosa vähenes ${fmt2(applied.principalDelta)}, finantseeritud põhiosa ${fmt2(applied.financedDelta)}, tasutud pikendustasu ${fmt2(applied.feeDelta)}. Osaline jääk jääb avatuks.`));
+    return null;
+  };
+
+  // R02/R05: full settlement uses precisely the same cumulative calculation as
+  // partial allocation, so paying the remainder cannot release funding twice.
   const payInvoice: Store['payInvoice'] = (invoiceId) => {
-    const inv = state.invoices.find((i) => i.id === invoiceId);
-    if (!inv || inv.status === 'paid') return;
-    const b = state.buyers.find((x) => x.id === inv.buyerId);
-    const financedPart = inv.status === 'financed' ? inv.amount - inv.retention : 0;
-    const fee = inv.extensionFee ?? 0;
-    const total = inv.amount + fee;
-    const now = nowTime();
-    setState((s) => ({
-      ...s,
-      invoices: s.invoices.map((i) => (i.id === invoiceId ? { ...i, status: 'paid', paidFinancedPart: financedPart } : i)),
-      buyers: s.buyers.map((x) =>
-        x.id === inv.buyerId
-          ? { ...x, openAr: Math.max(0, x.openAr - inv.amount), utilized: Math.max(0, x.utilized - financedPart) }
-          : x
-      ),
-      // R06: tasutud arve ootel pakkumised muutuvad kehtetuks
-      offers: s.offers.map((o) => (o.invoiceId === invoiceId && o.status === 'offered' ? { ...o, status: 'void' } : o)),
-    }));
-    const feeNote = fee > 0 ? ` sh lisatasu ${fmt2(fee)} müüjale (aktsepteeritud maksepikendus — nõude osa);` : '';
-    const finNote =
-      financedPart > 0
-        ? ` Finantseeritud põhiosa ${fmt(financedPart)} tasakaalustati; garantiijääk ${fmt(inv.retention)} vabanes müüjale (intress ja haldustasu maha arvatud).`
-        : ' Arvet ei olnud finantseeritud (E1 ootele) — finantseeringut ei vabanenud ega tekkinud.';
-    log('Süsteem', `camt.054 ${now}: ${inv.nr} — laekus ${fmt2(total)} ostjalt ${b?.name} vIBAN-ile.${feeNote} Nõue suletud; ostja avatud nõuded ja limiidi kasutus vähenesid.${finNote}`);
+    const current = stateRef.current;
+    const invoice = current.invoices.find((i) => i.id === invoiceId);
+    if (!invoice || invoice.status === 'paid' || invoiceOutstanding(invoice) <= 0) return;
+    const amount = invoiceOutstanding(invoice);
+    const applied = applyInvoicePayment(invoice, amount);
+    const next: DemoState = {
+      ...current,
+      invoices: current.invoices.map((i) => i.id === invoiceId ? applied.invoice : i),
+      buyers: current.buyers.map((b) => b.id === invoice.buyerId ? { ...b,
+        openAr: euros(Math.max(0, cents(b.openAr) - cents(applied.principalDelta))),
+        utilized: euros(Math.max(0, cents(b.utilized) - cents(applied.financedDelta))),
+      } : b),
+      offers: current.offers.map((o) => o.invoiceId === invoiceId && o.status === 'offered' ? { ...o, status: 'void' } : o),
+    };
+    setState(appendAudit(next, 'Süsteem', `camt.054 ${nowTime()}: ${invoice.nr} — laekus jääk ${fmt2(amount)}. Nõue suletud; põhiosa vähenes ${fmt2(applied.principalDelta)}, finantseeritud põhiosa ${fmt2(applied.financedDelta)}, tasutud pikendustasu ${fmt2(applied.feeDelta)} müüjale. Varasemaid osalaekumisi ei arvestatud teist korda.`));
   };
 
   // Kuupäeva nihutamine 'DD.MM.YYYY' kujul (maksetähtaja pikendus)
@@ -380,32 +468,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const makeOffer: Store['makeOffer'] = (invoiceId, days) => {
-    const inv = state.invoices.find((i) => i.id === invoiceId);
+    const current = stateRef.current;
+    const inv = current.invoices.find((i) => i.id === invoiceId);
     if (!inv) return 'Arvet ei leitud.';
     // R06: kehtiva seisundi kontroll pakkumise loomisel
     if (inv.status === 'paid') return 'Arve on tasutud — pakkumist ei saa teha.';
-    const b = state.buyers.find((x) => x.id === inv.buyerId);
-    if (b && (b.status === 'frozen' || b.status === 'rejected')) {
-      return `Ostjal ${b.name} on riskipiirang (${b.status === 'frozen' ? 'limiit peatatud' : 'keelatud'}) — maksetähtaja pikendamise pakkumine on suunatud pädevale kinnitajale.`;
-    }
-    if (state.offers.some((o) => o.invoiceId === invoiceId && (o.status === 'offered' || o.status === 'accepted'))) return 'Sellel arvel on juba aktiivne pakkumine.';
+    const b = current.buyers.find((x) => x.id === inv.buyerId);
+    if (!canOfferInvoice(inv, b, current.sanctionCases[inv.buyerId])) return 'Pakkumiseks on vaja aktiivset piiranguteta ostjat, E2/E3 tõendit ja osamakseteta tasumata arvet.';
+    if (current.offers.some((o) => o.invoiceId === invoiceId && (o.status === 'offered' || o.status === 'accepted'))) return 'Sellel arvel on juba aktiivne pakkumine.';
     const term = PAYMENT_TERMS.find((t) => t.days === days);
     if (!term) return 'Tundmatu maksetähtaeg.';
-    const fee = (inv.amount * term.feePct) / 100;
-    patch({ offers: [{ id: 'offer-' + uid(), invoiceId, days, feePct: term.feePct, fee, status: 'offered', createdBy: 'Marten Kask (Laagri kauplus)' }, ...state.offers] });
+    const fee = euros(Math.round(cents(inv.amount) * term.feePct / 100));
+    patch({ offers: [{ id: 'offer-' + uid(), invoiceId, days, feePct: term.feePct, fee, status: 'offered', createdBy: 'Marten Kask (Laagri kauplus)' }, ...current.offers] });
     log('Marten Kask (ärikliendihaldur)', `Maksa-hiljem pakkumine: ${inv.nr} (${fmt(inv.amount)}) → ${days} pv, lisatasu ${fmt2(fee)} (${term.feePct.toLocaleString('et-EE')}% arve summast) — saadetud ostja kliendiportaali. Tasumisel kuulub kokku ${fmt2(inv.amount + fee)} (põhisumma + lisatasu).`);
     return null;
   };
 
   const respondOffer: Store['respondOffer'] = (offerId, accept) => {
-    const o = state.offers.find((x) => x.id === offerId);
+    const current = stateRef.current;
+    const o = current.offers.find((x) => x.id === offerId);
     if (!o || o.status !== 'offered') return;
-    const inv = state.invoices.find((i) => i.id === o.invoiceId);
+    const inv = current.invoices.find((i) => i.id === o.invoiceId);
     if (!inv) return;
-    const b = state.buyers.find((x) => x.id === inv.buyerId);
+    const b = current.buyers.find((x) => x.id === inv.buyerId);
     if (accept) {
       // R06: kehtiva seisundi kontroll ka aktsepteerimisel
-      if (inv.status === 'paid' || (b && (b.status === 'frozen' || b.status === 'rejected'))) {
+      if (!canOfferInvoice(inv, b, current.sanctionCases[inv.buyerId])) {
         setState((s) => ({ ...s, offers: s.offers.map((x) => (x.id === offerId ? { ...x, status: 'void' } : x)) }));
         log('Süsteem', `Maksepikenduse pakkumine ${inv.nr} muutus KEHTETUKS — ${inv.status === 'paid' ? 'arve on juba tasutud' : `ostjal on riskipiirang (${b?.name})`}. Pakkumine suunatud pädevale kinnitajale.`);
         return;
@@ -434,13 +522,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const frozenIds = new Set(buyers.filter((b) => b.status === 'frozen').map((b) => b.id));
   const frozenFinanced = invoices
     .filter((i) => i.status === 'financed' && frozenIds.has(i.buyerId))
-    .reduce((s, i) => s + (i.amount - i.retention), 0);
+    .reduce((s, i) => s + invoiceFinancedOutstanding(i), 0);
   const ineligibleTotal = BASE.ineligible.reduce((s, i) => s + i.amount, 0);
   const reservesTotal = BASE.reserves.reduce((s, r) => s + r.amount, 0);
   // R02: tasutud nõue kaob ka bruto-AR-st; väljamakstud finantseering väheneb vaid
   // tegeliku finantseeritud põhiosa võrra (finantseerimata arve ei vabasta midagi)
-  const paidTotal = invoices.filter((i) => i.status === 'paid').reduce((s, i) => s + i.amount, 0);
-  const paidFinanced = invoices.filter((i) => i.status === 'paid').reduce((s, i) => s + (i.paidFinancedPart ?? 0), 0);
+  const paidTotal = euros(invoices.reduce((s, i) => s + cents(invoicePaidPrincipal(i)), 0));
+  const paidFinanced = euros(invoices.reduce((s, i) => s + cents(i.paidFinancedPart ?? 0), 0));
   const grossAr = BASE.grossAr - paidTotal;
   const fundsEmployed = BASE.fundsEmployed - paidFinanced;
   const netEligible = grossAr - ineligibleTotal - frozenOpenAr;
@@ -451,6 +539,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const value: Store = {
     persona, setPersona, bankRole, setBankRole, merchantRole, setMerchantRole, offers, makeOffer, respondOffer, buyers, invoices, events, audit, sanctionCases,
     triggerEvent, requestUnfreeze, confirmUnfreeze, unfreezeRequests, startReview, resolveReview, resolveSanctionCase, proposeAmlDecision, confirmAmlDecision, payInvoice, resetDemo,
+    aiDrafts, saveAiDraft, evidenceReviews, attachDemoEvidence, submitEvidenceReview, confirmEvidenceReview, demoPayments, confirmPaymentAllocation,
     base: { grossAr, ineligibleTotal, netEligible, advance, reservesTotal, grossAvailability, fundsEmployed, availableNow, frozenOpenAr, frozenFinanced },
   };
 

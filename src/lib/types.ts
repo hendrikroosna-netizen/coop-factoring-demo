@@ -91,6 +91,42 @@ export interface Invoice {
   extensionFee?: number;
   // R02: tasumise hetkel fikseeritud tegelik finantseeritud põhiosa (0 kui arvet ei finantseeritud)
   paidFinancedPart?: number;
+  /** Cumulative principal and extension-fee receipts. Original invoice amount never changes. */
+  paidPrincipal?: number;
+  paidExtensionFee?: number;
+  originalFinancedPart?: number;
+}
+
+export interface AiDraft {
+  text: string;
+  status: 'draft' | 'submitted';
+  kind: 'credit' | 'information';
+  updatedAt: string;
+  /** Older v3 drafts lack this and must be refreshed before reuse. */
+  contextFingerprint?: string;
+}
+
+export interface EvidenceReview {
+  state: 'attached' | 'submitted' | 'confirmed';
+  documentName: string;
+  reviewer?: string;
+}
+
+export interface PaymentAllocation {
+  invoiceId: string;
+  amount: number;
+}
+
+export interface DemoPayment {
+  id: string;
+  buyerId: string;
+  amount: number;
+  reference: string;
+  status: 'unallocated' | 'allocated';
+  allocations: PaymentAllocation[];
+  confirmedBy?: string;
+  /** Scope of the explicitly simulated receipt; historical ledger rows are separate. */
+  allowedInvoiceIds: string[];
 }
 
 export interface AuditLine {

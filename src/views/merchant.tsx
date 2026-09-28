@@ -1,14 +1,17 @@
-import { useState } from 'react';
-import { CheckCircle2, ArrowRight, RefreshCw, Landmark, FileSpreadsheet, CalendarClock } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CheckCircle2, ArrowRight, RefreshCw, Landmark, FileSpreadsheet, CalendarClock, Sparkles } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { AiInvoiceAssistant } from '@/components/ai-invoice-assistant';
+import { AiGrowthAssistant } from '@/components/ai-growth-assistant';
 import type { MerchantRole } from '@/lib/types';
 import { StatusChip, StatCard, StepCheck, Waterfall, EvidenceBadge } from '@/components/chrome';
 import { ANNUAL_FEE_HIGH, ANNUAL_FEE_LOW, CONTRACT_FEE_YEAR, EFFECTIVE_RATE, EPOD_LEVELS, FEE_BAND, MANAGER, MANAGER_CLIENT_IDS, MASS_PORTFOLIO_COUNT, MASS_PORTFOLIO_LIMIT_SUM, MASTER_IBAN, MERCHANT, MERCHANT_APP, PAYMENT_TERMS, pct } from '@/lib/data';
-import { eur, useStore } from '@/lib/store';
+import { eur, eur2, useStore } from '@/lib/store';
+import { canOfferInvoice, invoiceOutstanding, invoicePrincipalOutstanding } from '@/lib/finance';
 import { cn } from '@/lib/utils';
 
 function Notifications() {
@@ -148,11 +151,13 @@ const INVOICE_FILTERS = [
 ] as const;
 
 function InvoicesPage() {
-  const { invoices, buyers, merchantRole } = useStore();
+  const { invoices, buyers, merchantRole, evidenceReviews } = useStore();
   const [filter, setFilter] = useState<(typeof INVOICE_FILTERS)[number]['id']>('all');
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   // Ärikliendihaldur näeb vaid oma kaupluse klientide arveid
   const visible = merchantRole === 'manager' ? invoices.filter((i) => MANAGER_CLIENT_IDS.includes(i.buyerId)) : invoices;
   const shown = visible.filter((i) => filter === 'all' || i.status === filter);
+  const selectedInvoice = visible.find((invoice) => invoice.id === selectedInvoiceId) ?? visible.find((invoice) => (invoice.evidence === 'E1' && invoice.status !== 'paid') || evidenceReviews[invoice.id]);
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
       <Card className="xl:col-span-2">
@@ -197,10 +202,14 @@ function InvoicesPage() {
                   <TableRow key={i.id}>
                     <TableCell className="font-medium tabular-nums">{i.nr}</TableCell>
                     <TableCell>{b?.name}</TableCell>
-                    <TableCell className="text-right tabular-nums whitespace-nowrap">{eur(i.amount)}</TableCell>
+                    <TableCell className="text-right tabular-nums whitespace-nowrap">{eur(i.amount)}{(invoicePrincipalOutstanding(i) < i.amount || (i.extensionFee ?? 0) > 0) && <div className="text-[11px] text-muted-foreground">jääk {eur2(invoiceOutstanding(i))}</div>}</TableCell>
                     <TableCell className="tabular-nums text-muted-foreground">{i.issued}</TableCell>
                     <TableCell className="tabular-nums">{i.due}</TableCell>
-                    <TableCell><EvidenceBadge level={i.evidence} /></TableCell>
+                    <TableCell>
+                      <EvidenceBadge level={i.evidence} />
+                      {((i.evidence === 'E1' && i.status !== 'paid') || evidenceReviews[i.id]) && <Button size="sm" variant="ghost" className="mt-1 h-7 px-1 text-xs text-info" aria-pressed={selectedInvoice?.id === i.id} onClick={() => { setSelectedInvoiceId(i.id); document.getElementById('invoice-ai-assistant')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }}><Sparkles className="h-3 w-3" aria-hidden="true" />Arve kontroll</Button>}
+                      {evidenceReviews[i.id]?.state === 'submitted' && i.status !== 'paid' && <div className="text-[11px] text-warning mt-1">Tõend kontrollimisel</div>}
+                    </TableCell>
                     <TableCell>
                       <StatusChip status={i.status} />
                       {i.status === 'financed' && (
@@ -219,10 +228,12 @@ function InvoicesPage() {
           </Table>
           <div className="text-[11px] text-muted-foreground mt-3 space-y-1 border-t pt-2">
             <div>Tarnekinnituse tasemed (ePOD): {EPOD_LEVELS.map((e) => `${e.level} = ${e.text}`).join(' · ')}.</div>
-            <div className="text-warning font-medium">ARV-2026-04490 (E1) ootab tarnekinnitust — finantseerimise miinimumtase on E2; arve finantseeritakse, kui allkirjastatud saateleht/CMR lisandub.</div>
+            <div className="text-warning font-medium">Finantseerimiseks on vajalik vähemalt E2 taseme tõend. Lisatud dokumendi kinnitab pank; seejärel kontrollitakse ka teisi finantseerimistingimusi.</div>
           </div>
         </CardContent>
       </Card>
+      <div className="space-y-4">
+      {selectedInvoice && <div id="invoice-ai-assistant"><AiInvoiceAssistant key={selectedInvoice.id} invoice={selectedInvoice} /></div>}
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm">Faktooringu kogumiskonto</CardTitle></CardHeader>
         <CardContent className="text-xs space-y-1.5">
@@ -234,6 +245,7 @@ function InvoicesPage() {
           </div>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }
@@ -486,12 +498,13 @@ export function MerchantRoleSwitch() {
   );
 }
 
-function ManagerDashboard() {
-  const { buyers, offers } = useStore();
+function ManagerDashboard({ onOpenOffer }: { onOpenOffer?: (invoiceId: string) => void }) {
+  const { buyers, invoices, offers, sanctionCases } = useStore();
   const clients = buyers.filter((b) => MANAGER_CLIENT_IDS.includes(b.id));
   const openAr = clients.reduce((s, b) => s + b.openAr, 0);
-  const freeLimit = clients.reduce((s, b) => s + Math.max(0, b.limit - b.utilized), 0);
-  const activeOffers = offers.filter((o) => o.status === 'offered').length;
+  const availableLimit = (buyer: (typeof buyers)[number]) => buyer.status === 'active' && !buyer.relationFlag && sanctionCases[buyer.id]?.state !== 'open' ? Math.max(0, buyer.limit - buyer.utilized) : 0;
+  const freeLimit = clients.reduce((s, b) => s + availableLimit(b), 0);
+  const activeOffers = offers.filter((o) => o.status === 'offered' && invoices.some((invoice) => invoice.id === o.invoiceId && MANAGER_CLIENT_IDS.includes(invoice.buyerId))).length;
   return (
     <div className="space-y-6">
       <div className="text-xs text-muted-foreground border border-info/30 bg-info/5 rounded-lg px-3 py-2">
@@ -499,10 +512,11 @@ function ManagerDashboard() {
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
         <StatCard label="Minu kliente" value={clients.length} hint={`${MANAGER.store} — ärikliendid, kellele vormistan krediidilepinguid`} />
-        <StatCard label="Avatud nõuded minu klientidelt" value={eur(openAr)} hint="Maksmata arvete summa" />
-        <StatCard label="Vaba limiiti kokku" value={eur(freeLimit)} tone="success" hint="Limiit miinus kasutus — ruumi uutele ostudele" />
+        <StatCard label="Avatud nõuded minu klientidelt" value={eur2(openAr)} hint="Ostjate praegune avatud põhiosa; laekumised on maha arvatud" />
+        <StatCard label="Vaba limiiti kokku" value={eur2(freeLimit)} tone="success" hint="Aktiivsete piiranguta ostjate limiit miinus praegune kasutus" />
         <StatCard label="Aktiivseid pakkumisi" value={activeOffers} tone={activeOffers > 0 ? 'warning' : 'default'} hint="«Maksa hiljem» — ootavad ostja otsust" />
       </div>
+      {onOpenOffer && <AiGrowthAssistant onOpenOffer={onOpenOffer} />}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-semibold">Minu kliendid — {MANAGER.store}</CardTitle>
@@ -526,8 +540,8 @@ function ManagerDashboard() {
                   <TableCell><div className="font-medium">{b.name}</div><div className="text-xs tabular-nums text-muted-foreground">{b.reg}</div></TableCell>
                   <TableCell className="font-semibold">{b.grade}</TableCell>
                   <TableCell className="text-right tabular-nums whitespace-nowrap">{eur(b.limit)}</TableCell>
-                  <TableCell className="text-right tabular-nums whitespace-nowrap">{eur(b.utilized)}</TableCell>
-                  <TableCell className="text-right tabular-nums whitespace-nowrap">{eur(Math.max(0, b.limit - b.utilized))}</TableCell>
+                  <TableCell className="text-right tabular-nums whitespace-nowrap">{eur2(b.utilized)}</TableCell>
+                  <TableCell className="text-right tabular-nums whitespace-nowrap">{eur2(availableLimit(b))}</TableCell>
                   <TableCell className="text-right tabular-nums whitespace-nowrap">{b.dpd > 0 ? b.dpd + ' pv' : '—'}</TableCell>
                   <TableCell><StatusChip status={b.status} /></TableCell>
                 </TableRow>
@@ -541,21 +555,38 @@ function ManagerDashboard() {
   );
 }
 
-function OffersPage() {
-  const { invoices, buyers, offers, makeOffer } = useStore();
+function OffersPage({ initialInvoiceId }: { initialInvoiceId?: string | null }) {
+  const { invoices, buyers, offers, makeOffer, sanctionCases } = useStore();
   const [term, setTerm] = useState<Record<string, 45 | 60>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState(initialInvoiceId ?? null);
   const mine = invoices.filter((i) => MANAGER_CLIENT_IDS.includes(i.buyerId) && i.status !== 'paid');
+  const selectedInvoice = mine.find((invoice) => invoice.id === selectedInvoiceId);
+  const openOffer = (invoiceId: string) => {
+    setSelectedInvoiceId(invoiceId);
+    setTerm((current) => ({ ...current, [invoiceId]: 45 }));
+    setErrors((current) => ({ ...current, [invoiceId]: '' }));
+    requestAnimationFrame(() => {
+      const row = document.getElementById(`offer-row-${invoiceId}`);
+      row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      row?.focus({ preventScroll: true });
+    });
+  };
+  useEffect(() => {
+    if (initialInvoiceId) document.getElementById(`offer-row-${initialInvoiceId}`)?.focus({ preventScroll: true });
+  }, [initialInvoiceId]);
   const submit = (invoiceId: string, days: 45 | 60) => {
     const err = makeOffer(invoiceId, days);
     setErrors((m) => ({ ...m, [invoiceId]: err ?? '' }));
   };
   return (
     <div className="space-y-4">
+      <AiGrowthAssistant onOpenOffer={openOffer} />
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-semibold flex items-center gap-2"><CalendarClock className="h-4 w-4 text-primary" />«Maksa hiljem» — paku kliendile pikendatud maksetähtaega</CardTitle>
           <div className="text-xs text-muted-foreground">Lisatasu arvutatakse samast maksetingimuste tabelist, mida ostja näeb kliendiportaalis (45 pv = +0,8%, 60 pv = +1,5% arve summast). Pakkumine ilmub ostja kliendiportaali aktsepteerimiseks.</div>
+          {selectedInvoice && !offers.some((offer) => offer.invoiceId === selectedInvoice.id && (offer.status === 'offered' || offer.status === 'accepted')) && <div className="text-xs border border-info/30 bg-info/5 text-info rounded-md p-3" role="status">Pakkumise mustand: {selectedInvoice.nr}. Vali 45 või 60 päeva ning vaata tasu üle. Pakkumine saadetakse ostjale alles nupuga „Paku”.</div>}
         </CardHeader>
         <CardContent>
           <Table className="min-w-[860px]">
@@ -577,11 +608,12 @@ function OffersPage() {
                 const t = PAYMENT_TERMS.find((x) => x.days === days)!;
                 const fee = (i.amount * t.feePct) / 100;
                 const offer = offers.find((o) => o.invoiceId === i.id);
+                const eligible = canOfferInvoice(i, b, b ? sanctionCases[b.id] : undefined);
                 return (
-                  <TableRow key={i.id}>
+                  <TableRow key={i.id} id={`offer-row-${i.id}`} tabIndex={-1} className={cn('focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info', selectedInvoiceId === i.id && 'bg-info/5')}>
                     <TableCell className="font-medium tabular-nums">{i.nr}</TableCell>
                     <TableCell>{b?.name}</TableCell>
-                    <TableCell className="text-right tabular-nums whitespace-nowrap">{eur(i.amount)}</TableCell>
+                    <TableCell className="text-right tabular-nums whitespace-nowrap">{eur(i.amount)}{(invoicePrincipalOutstanding(i) < i.amount || (i.extensionFee ?? 0) > 0) && <div className="text-[11px] text-muted-foreground">jääk {eur2(invoiceOutstanding(i))}</div>}</TableCell>
                     <TableCell className="tabular-nums whitespace-nowrap">{i.due}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-0.5 border rounded-lg p-0.5 bg-muted/40 w-fit" role="group" aria-label="Pikenduse valik">
@@ -597,22 +629,21 @@ function OffersPage() {
                         ))}
                       </div>
                     </TableCell>
-                    <TableCell className="text-right tabular-nums whitespace-nowrap">{eur(fee)}</TableCell>
+                    <TableCell className="text-right tabular-nums whitespace-nowrap">{eur2(fee)}</TableCell>
                     <TableCell>
-                      {offer && offer.status !== 'declined' ? (
+                      {offer && (offer.status === 'offered' || offer.status === 'accepted') ? (
                         <div>
                           <StatusChip status={offer.status} />
                           <div className="text-[11px] text-muted-foreground mt-0.5">
-                            {offer.days} pv · {eur(offer.fee)}
-                            {offer.status === 'accepted' && ' — uus tähtaeg arvel; tasumisele ' + eur(i.amount + offer.fee)}
+                            {offer.days} pv · {eur2(offer.fee)}
+                            {offer.status === 'accepted' && ' — uus tähtaeg arvel; tasumisele ' + eur2(invoiceOutstanding(i))}
                             {offer.status === 'offered' && ' — ootab ostja otsust'}
-                            {offer.status === 'void' && ' — kehtetu (riskipiirang / arve tasutud)'}
                           </div>
                         </div>
-                      ) : b && (b.status === 'frozen' || b.status === 'rejected') ? (
+                      ) : !eligible ? (
                         <div>
                           <Button size="sm" variant="outline" className="h-7 text-xs" disabled>Paku {days} pv →</Button>
-                          <div className="text-[11px] text-destructive mt-0.5">Ostjal on riskipiirang — pakkumine suunatakse pädevale kinnitajale</div>
+                          <div className="text-[11px] text-warning mt-0.5">{b?.status !== 'active' || (b && sanctionCases[b.id]?.state === 'open') ? 'Ostja piirang vajab panga kontrolli.' : i.evidence === 'E1' ? 'Tarnekinnitus vajab kontrolli.' : invoicePrincipalOutstanding(i) < i.amount ? 'Osaliselt tasutud arve vajab eraldi tingimusi.' : 'Arve ei vasta pakkumise tingimustele.'}</div>
                         </div>
                       ) : (
                         <div>
@@ -633,17 +664,22 @@ function OffersPage() {
   );
 }
 
-export function MerchantHome({ section }: { section: string }) {
+export function MerchantHome({ section, onNavigate }: { section: string; onNavigate?: (section: string) => void }) {
   const { merchantRole } = useStore();
+  const [offerInvoiceId, setOfferInvoiceId] = useState<string | null>(null);
+  const openOffer = (invoiceId: string) => {
+    setOfferInvoiceId(invoiceId);
+    onNavigate?.('offers');
+  };
   if (merchantRole === 'manager') {
     switch (section) {
       case 'invoices':
         return <InvoicesPage />;
       case 'offers':
-        return <OffersPage />;
+        return <OffersPage initialInvoiceId={offerInvoiceId} />;
       case 'overview':
       default:
-        return <ManagerDashboard />;
+        return <ManagerDashboard onOpenOffer={onNavigate ? openOffer : undefined} />;
     }
   }
   switch (section) {

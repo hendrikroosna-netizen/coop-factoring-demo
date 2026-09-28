@@ -25,8 +25,8 @@ type Section = { id: string; label: string; icon: ReactNode; desc: string; group
 const SECTIONS: Record<Persona, Section[]> = {
   bank: [
     { id: 'dashboard', label: 'Töölaud', icon: <LayoutDashboard className="h-4 w-4" />, desc: 'Portfelli seis, sündmuste voog ja finantseerimisbaas' },
-    { id: 'portfolio', label: 'Portfell', icon: <Users className="h-4 w-4" />, desc: 'Ostjate limiidid ja reeglipõhised otsused' },
-    { id: 'claims', label: 'Nõuded ja laekumised', icon: <ArrowLeftRight className="h-4 w-4" />, desc: 'Nõuete loomine, finantseerimine ja laekumiste sobitamine' },
+    { id: 'portfolio', label: 'Portfell', icon: <Users className="h-4 w-4" />, desc: 'Ostjate limiidid, kinnitatud otsused ja AI otsustusabi' },
+    { id: 'claims', label: 'Nõuded ja laekumised', icon: <ArrowLeftRight className="h-4 w-4" />, desc: 'AI abiga laekumiste jaotus, tarnetõendite kontroll ja nõuete elutsükkel' },
     { id: 'merchant', label: 'Müüja vastuvõtt', icon: <Building2 className="h-4 w-4" />, desc: 'Bauhof Group AS faktooringutaotluse läbivaatus' },
     { id: 'aml', label: 'AML/KYC vastuvõtt', icon: <ShieldCheck className="h-4 w-4" />, desc: 'Uue ostja automaatne skreening ja limiit' },
     { id: 'rules', label: 'Reeglid ja mudelid', icon: <BookOpen className="h-4 w-4" />, desc: 'Otsusteguri reeglitabelid ja versioonid' },
@@ -196,7 +196,7 @@ function Shell() {
         <PerspectiveBanner />
         <main className="flex-1 overflow-y-auto p-6">
           {persona === 'bank' && <BankHome section={section} onNavigate={pickSection} />}
-          {persona === 'merchant' && <MerchantHome section={section} />}
+          {persona === 'merchant' && <MerchantHome section={section} onNavigate={pickSection} />}
           {persona === 'buyer' && <BuyerHome />}
         </main>
       </div>
